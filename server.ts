@@ -634,7 +634,7 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
       prompt += `User: ${message}\n\nAssistant:`;
 
       // Generate response using Google Generative AI
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
       const result = await model.generateContent(prompt);
       const response = await result.response;
       const responseText = response.text() || "I'm sorry, I couldn't generate a response. Please try again.";
@@ -761,7 +761,7 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
       }
 
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
       // Convert image buffer to base64
       const base64Image = imageBuffer.toString("base64");
