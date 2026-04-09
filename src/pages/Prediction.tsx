@@ -65,6 +65,8 @@ const Prediction: React.FC = () => {
     }
   });
 
+  // Pregnancies is always sent as 0 to the ML model (needs 8 features) but hidden from UI
+
   const onSubmit = async (data: PredictionFormData) => {
     setIsLoading(true);
     setResult(null);
@@ -88,7 +90,6 @@ const Prediction: React.FC = () => {
   };
 
   const inputFields = [
-    { id: 'Pregnancies', label: 'Pregnancies', type: 'number', min: 0, max: 20, hint: 'Number of times pregnant', tooltip: 'Relevant for gestational diabetes history.' },
     { id: 'Glucose', label: 'Glucose', type: 'number', min: 0, max: 300, hint: 'Plasma glucose concentration', tooltip: 'A 2-hour oral glucose tolerance test.' },
     { id: 'BloodPressure', label: 'Blood Pressure', type: 'number', min: 0, max: 200, hint: 'Diastolic blood pressure (mm Hg)', tooltip: 'Normal is around 80 mm Hg.' },
     { id: 'SkinThickness', label: 'Skin Thickness', type: 'number', min: 0, max: 100, hint: 'Triceps skin fold thickness (mm)', tooltip: 'Used to estimate body fat.' },

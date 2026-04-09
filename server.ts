@@ -131,7 +131,7 @@ function pearsonCorrelation(x: number[], y: number[]): number {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   // Initialize database
   initializeDatabase();
@@ -751,37 +751,76 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
 
       const userId = req.user?.userId || null;
       const imageBuffer = req.file.buffer;
-      
-      // In a production app, you would use Google Cloud Vision API or similar
-      // For now, we'll use a mock nutrition database based on common foods
-      
-      // Mock implementation: random food detection
-      const mockFoods = [
-        { name: "Grilled Chicken Breast", cal: 165, carbs: 0, protein: 31, fat: 3.6, fiber: 0, sugar: 0, sodium: 74 },
-        { name: "Brown Rice Bowl", cal: 248, carbs: 52, protein: 5.5, fat: 2, fiber: 3.5, sugar: 0.7, sodium: 10 },
-        { name: "Caesar Salad", cal: 184, carbs: 6, protein: 6, fat: 15, fiber: 2, sugar: 2, sodium: 470 },
-        { name: "Salmon Fillet", cal: 206, carbs: 0, protein: 22, fat: 13, fiber: 0, sugar: 0, sodium: 59 },
-        { name: "Apple", cal: 95, carbs: 25, protein: 0.5, fat: 0.3, fiber: 4.4, sugar: 19, sodium: 2 },
-        { name: "Banana", cal: 105, carbs: 27, protein: 1.3, fat: 0.4, fiber: 3.1, sugar: 14, sodium: 1 },
-        { name: "Oatmeal Bowl", cal: 166, carbs: 28, protein: 6, fat: 3.5, fiber: 4, sugar: 0.6, sodium: 115 },
-        { name: "Greek Yogurt", cal: 100, carbs: 6, protein: 17, fat: 0.7, fiber: 0, sugar: 4, sodium: 60 },
-        { name: "Avocado Toast", cal: 250, carbs: 30, protein: 7, fat: 11, fiber: 10, sugar: 4, sodium: 300 },
-        { name: "Quinoa Salad", cal: 180, carbs: 28, protein: 7, fat: 4.5, fiber: 5, sugar: 2, sodium: 180 },
-      ];
 
-      const randomFood = mockFoods[Math.floor(Math.random() * mockFoods.length)];
-      const confidence = 0.75 + Math.random() * 0.2; // 75-95% confidence
+      // Use Gemini Vision API to analyze the food image
+      const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+      if (!apiKey) {
+        return res.status(503).json({
+          error: "AI service not configured",
+          message: "Please set GEMINI_API_KEY to enable food scanning",
+        });
+      }
+
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "models/gemini-2.5-flash" });
+
+      // Convert image buffer to base64
+      const base64Image = imageBuffer.toString("base64");
+      const mimeType = req.file.mimetype || "image/jpeg";
+
+      const prompt = `Analyze this food image and identify the food item(s). Return ONLY a valid JSON object with no markdown formatting, no code fences, and no extra text. Use this exact structure:
+{
+  "foodName": "name of the food",
+  "calories": <number>,
+  "carbs": <number in grams>,
+  "protein": <number in grams>,
+  "fat": <number in grams>,
+  "fiber": <number in grams>,
+  "sugar": <number in grams>,
+  "sodium": <number in mg>
+}
+
+If there are multiple food items, combine them into one entry with totals.
+If you cannot identify the food, use your best guess based on appearance.
+Base nutrition values on a typical single serving size.
+Return ONLY the JSON object, nothing else.`;
+
+      const result = await model.generateContent([
+        prompt,
+        {
+          inlineData: {
+            mimeType,
+            data: base64Image,
+          },
+        },
+      ]);
+
+      const responseText = result.response.text();
+
+      // Parse the JSON response from Gemini
+      let parsedNutrition;
+      try {
+        // Strip any markdown code fences if present
+        const cleanJson = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        parsedNutrition = JSON.parse(cleanJson);
+      } catch (parseError) {
+        console.error("Failed to parse Gemini response:", responseText);
+        return res.status(500).json({
+          error: "Failed to analyze food image",
+          message: "AI could not parse nutrition data from the image",
+        });
+      }
 
       const nutritionData = {
-        foodName: randomFood.name,
-        calories: randomFood.cal,
-        carbs: randomFood.carbs,
-        protein: randomFood.protein,
-        fat: randomFood.fat,
-        fiber: randomFood.fiber,
-        sugar: randomFood.sugar,
-        sodium: randomFood.sodium,
-        confidence: Math.round(confidence * 100) / 100,
+        foodName: parsedNutrition.foodName || "Unknown Food",
+        calories: Number(parsedNutrition.calories) || 0,
+        carbs: Number(parsedNutrition.carbs) || 0,
+        protein: Number(parsedNutrition.protein) || 0,
+        fat: Number(parsedNutrition.fat) || 0,
+        fiber: Number(parsedNutrition.fiber) || 0,
+        sugar: Number(parsedNutrition.sugar) || 0,
+        sodium: Number(parsedNutrition.sodium) || 0,
+        confidence: 0.85,
       };
 
       // Store in nutrition_logs table if user is authenticated
@@ -789,14 +828,12 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
         try {
           queries.logNutrition.run(
             userId,
-            randomFood.name,
-            randomFood.cal,
-            randomFood.protein,
-            randomFood.carbs,
-            randomFood.fat,
-            randomFood.fiber,
-            randomFood.sugar,
-            randomFood.sodium
+            nutritionData.foodName,
+            nutritionData.calories,
+            nutritionData.protein,
+            nutritionData.carbs,
+            nutritionData.fat,
+            nutritionData.sugar
           );
         } catch (dbError) {
           console.error("Database error logging nutrition:", dbError);
@@ -806,8 +843,6 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
 
       res.json(addComplianceMetadata({
         nutrition: nutritionData,
-        mock: true,
-        message: "This is a demo using mock data. In production, integrate with Google Cloud Vision API or similar.",
       }));
     } catch (error: any) {
       console.error("Food scan error:", error);

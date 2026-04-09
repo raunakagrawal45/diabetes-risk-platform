@@ -1,11 +1,20 @@
 import streamlit as st
 import requests
 import json
+import os
+import base64
 from datetime import datetime
 import pandas as pd
-import plotly.graph_objects as go
 from PIL import Image
 import io
+import joblib
+import numpy as np
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
 
 # Page config
 st.set_page_config(
@@ -15,136 +24,245 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for professional styling
+# Custom CSS
 st.markdown("""
     <style>
-    .main {
-        padding-top: 0rem;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+    
+    .main { padding-top: 0rem; font-family: 'Inter', sans-serif; }
+    .stTabs [data-baseweb="tab-list"] button { font-weight: 600; }
+    
+    .risk-card {
+        padding: 1.5rem;
+        border-radius: 1rem;
+        text-align: center;
+        border: 1px solid #e5e7eb;
     }
-    .stTabs [data-baseweb="tab-list"] button {
-        font-weight: 600;
+    .risk-high { background: linear-gradient(135deg, #fef2f2, #fee2e2); border-color: #fca5a5; }
+    .risk-medium { background: linear-gradient(135deg, #fffbeb, #fef3c7); border-color: #fcd34d; }
+    .risk-low { background: linear-gradient(135deg, #f0fdf4, #dcfce7); border-color: #86efac; }
+    
+    .nutrition-card {
+        padding: 1rem;
+        border-radius: 0.75rem;
+        text-align: center;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .hero-section {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+        padding: 2rem;
+        border-radius: 1rem;
+        color: white;
+        margin-bottom: 1.5rem;
     }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
+
+# --- Load ML model directly (no Flask dependency for prediction) ---
+@st.cache_resource
+def load_model():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(script_dir, "model.pkl")
+    scaler_path = os.path.join(script_dir, "scaler.pkl")
+    
+    if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+        return None, None
+    
+    model = joblib.load(model_path)
+    scaler = joblib.load(scaler_path)
+    return model, scaler
+
+model, scaler = load_model()
+
+# --- Gemini API helper ---
+def call_gemini(prompt, image_data=None, mime_type=None):
+    """Call Gemini API directly via REST."""
+    if not GEMINI_API_KEY:
+        return None, "GEMINI_API_KEY not configured. Please set it in .env file."
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    parts = [{"text": prompt}]
+    if image_data and mime_type:
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": image_data
+            }
+        })
+    
+    payload = {"contents": [{"parts": parts}]}
+    
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return text, None
+        else:
+            return None, f"Gemini API error: {response.status_code} - {response.text[:200]}"
+    except Exception as e:
+        return None, f"Gemini API connection error: {str(e)}"
+
 
 # Initialize session state
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
-if 'auth_token' not in st.session_state:
-    st.session_state.auth_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoic3RyZWFtbGl0dXNlciIsImlhdCI6MTczNzI0NTEyMX0.demo_token"
 
 # Header
-st.markdown("# 🏥 DiaRisk AI - Diabetes Risk Prediction Platform")
-st.markdown("*Advanced AI-powered diabetes risk assessment and health management*")
-st.divider()
+st.markdown("""
+<div class="hero-section">
+    <h1 style="margin:0; font-size:2rem;">🏥 DiaRisk AI</h1>
+    <p style="margin:0.5rem 0 0 0; opacity:0.8;">Advanced AI-powered diabetes risk assessment and health management</p>
+</div>
+""", unsafe_allow_html=True)
 
-# Sidebar navigation
+# Sidebar
 with st.sidebar:
-    st.markdown("### Navigation")
+    st.markdown("### 🧭 Navigation")
     page = st.radio(
         "Select a feature:",
-        ["Risk Prediction", "AI Health Assistant", "Food Scanner", "Health Calculators", "Education"]
+        ["🔮 Risk Prediction", "🤖 AI Health Assistant", "📸 Food Scanner", "🧮 Health Calculators", "📚 Education"],
+        label_visibility="collapsed"
     )
     
     st.divider()
-    st.markdown("### About")
+    
+    st.markdown("### ℹ️ About")
     st.info(
-        "🎯 **DiaRisk AI** is a comprehensive platform for diabetes prevention and management.\n\n"
-        "✨ Features:\n"
+        "**DiaRisk AI** is a comprehensive platform for diabetes prevention and management.\n\n"
+        "✨ **Features:**\n"
         "- ML-based risk assessment\n"
-        "- AI health assistant\n"
-        "- Food nutritition scanner\n"
+        "- AI health chatbot (Gemini)\n"
+        "- Food nutrition scanner\n"
         "- Health calculators\n"
         "- Educational resources"
     )
+    
+    st.divider()
+    st.caption("⚕️ For educational purposes only. Not medical advice.")
 
 # =================== RISK PREDICTION PAGE ===================
-if page == "Risk Prediction":
-    st.markdown("## AI Risk Prediction")
-    st.markdown("Enter your health parameters to get an AI-powered diabetes risk assessment")
+if page == "🔮 Risk Prediction":
+    st.markdown("## 🔮 AI Risk Prediction")
+    st.markdown("Enter your health parameters for an AI-powered diabetes risk assessment.")
+    
+    if model is None or scaler is None:
+        st.error("❌ ML model not found! Please run `python diabetes_prediction.py` first to train the model.")
+        st.stop()
     
     col1, col2 = st.columns(2)
     
     with col1:
-        pregnancies = st.number_input("Pregnancies", min_value=0, max_value=20, value=2)
-        glucose = st.number_input("Glucose (mg/dL)", min_value=0, max_value=300, value=120)
-        blood_pressure = st.number_input("Blood Pressure (mmHg)", min_value=0, max_value=200, value=70)
-        skin_thickness = st.number_input("Skin Thickness (mm)", min_value=0, max_value=100, value=20)
+        glucose = st.number_input("🩸 Glucose (mg/dL)", min_value=0, max_value=300, value=120,
+                                   help="Plasma glucose concentration from a 2-hour oral glucose tolerance test")
+        blood_pressure = st.number_input("💓 Blood Pressure (mmHg)", min_value=0, max_value=200, value=70,
+                                          help="Diastolic blood pressure. Normal is around 80 mmHg")
+        skin_thickness = st.number_input("📏 Skin Thickness (mm)", min_value=0, max_value=100, value=20,
+                                          help="Triceps skin fold thickness, used to estimate body fat")
+        insulin = st.number_input("💉 Insulin (mU/ml)", min_value=0, max_value=900, value=80,
+                                   help="2-Hour serum insulin level")
     
     with col2:
-        insulin = st.number_input("Insulin (mU/ml)", min_value=0, max_value=900, value=80)
-        bmi = st.number_input("BMI (kg/m²)", min_value=10.0, max_value=60.0, value=25.5)
-        diabetes_pedigree = st.number_input("Diabetes Pedigree Function", min_value=0.0, max_value=2.5, value=0.5)
-        age = st.number_input("Age (years)", min_value=18, max_value=120, value=30)
+        bmi = st.number_input("⚖️ BMI (kg/m²)", min_value=10.0, max_value=60.0, value=25.5, step=0.1,
+                               help="Body Mass Index. Over 30 is considered obese")
+        diabetes_pedigree = st.number_input("🧬 Diabetes Pedigree Function", min_value=0.0, max_value=2.5, value=0.5, step=0.01,
+                                             help="Genetic influence score based on family history")
+        age = st.number_input("🎂 Age (years)", min_value=18, max_value=120, value=30,
+                               help="Risk typically increases with age")
     
-    if st.button("🔮 Predict Risk", key="predict_btn", use_container_width=True):
-        try:
-            prediction_data = {
-                "Pregnancies": pregnancies,
-                "Glucose": glucose,
-                "BloodPressure": blood_pressure,
-                "SkinThickness": skin_thickness,
-                "Insulin": insulin,
-                "BMI": bmi,
-                "DiabetesPedigreeFunction": diabetes_pedigree,
-                "Age": age
-            }
-            
-            response = requests.post(
-                "http://localhost:5000/predict",
-                json=prediction_data,
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
+    st.markdown("")
+    
+    if st.button("🔬 Run Diagnostic Analysis", key="predict_btn", use_container_width=True, type="primary"):
+        with st.spinner("🧠 Analyzing clinical data with ML model..."):
+            try:
+                # Prepare features (Pregnancies=0, hidden from UI)
+                features = np.array([[0, glucose, blood_pressure, skin_thickness, 
+                                      insulin, bmi, diabetes_pedigree, age]])
+                features_scaled = scaler.transform(features)
                 
+                prediction = model.predict(features_scaled)[0]
+                prediction_proba = model.predict_proba(features_scaled)[0]
+                probability = float(prediction_proba[1])
+                
+                if prediction == 1:
+                    prediction_label = "Diabetic"
+                    if probability >= 0.8:
+                        risk_level = "Very High"
+                    elif probability >= 0.6:
+                        risk_level = "High"
+                    else:
+                        risk_level = "Medium"
+                else:
+                    prediction_label = "Non-Diabetic"
+                    if probability >= 0.4:
+                        risk_level = "Medium"
+                    elif probability >= 0.2:
+                        risk_level = "Low"
+                    else:
+                        risk_level = "Very Low"
+                
+                confidence = max(prediction_proba) * 100
+                
+                st.markdown("---")
+                
+                # Results
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    st.metric("Prediction", result.get("prediction", "N/A"))
-                
+                    st.metric("🏷️ Prediction", prediction_label)
                 with col2:
-                    prob = result.get("probability", 0) * 100
-                    st.metric("Risk Probability", f"{prob:.1f}%")
-                
+                    st.metric("📊 Risk Probability", f"{probability * 100:.1f}%")
                 with col3:
-                    risk_level = "🔴 High" if prob >= 70 else "🟡 Medium" if prob >= 40 else "🟢 Low"
-                    st.metric("Risk Level", risk_level)
+                    risk_emoji = "🔴" if risk_level in ["High", "Very High"] else "🟡" if risk_level == "Medium" else "🟢"
+                    st.metric("⚠️ Risk Level", f"{risk_emoji} {risk_level}")
                 
-                st.divider()
+                # Confidence gauge
+                st.markdown(f"**Model Confidence:** {confidence:.1f}%")
+                st.progress(confidence / 100)
                 
-                # Display recommendations
-                if result.get("prediction") == "Diabetic":
-                    st.warning("⚠️ Based on the analysis, you have elevated diabetes risk. Please consult with a healthcare professional.")
-                    st.markdown("**Recommended Actions:**")
+                st.markdown("---")
+                
+                # Recommendations
+                if prediction == 1:
+                    st.warning("⚠️ Based on the analysis, you have elevated diabetes risk. Please consult a healthcare professional.")
+                    st.markdown("**🩺 Recommended Actions:**")
                     st.markdown("""
-                    - Schedule a consultation with an endocrinologist
-                    - Monitor your glucose levels regularly
-                    - Adopt a balanced, low-sugar diet
-                    - Increase physical activity (150+ min/week)
-                    - Maintain a healthy weight
+                    - 📅 Schedule a consultation with an endocrinologist
+                    - 🩸 Monitor your glucose levels regularly  
+                    - 🥗 Adopt a balanced, low-sugar diet
+                    - 🏃 Increase physical activity (150+ min/week)
+                    - ⚖️ Maintain a healthy weight
+                    - 💤 Get 7-9 hours of quality sleep
                     """)
                 else:
                     st.success("✅ Your diabetes risk is relatively low. Continue maintaining healthy habits!")
-                    st.markdown("**Preventive Measures:**")
+                    st.markdown("**💪 Preventive Measures:**")
                     st.markdown("""
-                    - Maintain regular exercise routine
-                    - Keep a balanced diet
-                    - Monitor your BMI
-                    - Schedule annual health checkups
-                    - Manage stress levels
+                    - 🏋️ Maintain regular exercise routine
+                    - 🥦 Keep a balanced diet
+                    - ⚖️ Monitor your BMI
+                    - 📋 Schedule annual health checkups
+                    - 🧘 Manage stress levels
                     """)
-            else:
-                st.error("Error getting prediction. Please try again.")
-        except Exception as e:
-            st.error(f"Connection error: {str(e)}")
-            st.info("💡 Make sure the Python prediction service is running on port 5000.")
+                
+                # Disclaimer
+                st.markdown("---")
+                st.caption("⚕️ **DISCLAIMER:** This is an AI-based screening tool, not a medical diagnosis. "
+                          "Always consult a healthcare provider for confirmation and treatment.")
+                
+            except Exception as e:
+                st.error(f"❌ Prediction error: {str(e)}")
 
 # =================== AI HEALTH ASSISTANT PAGE ===================
-elif page == "AI Health Assistant":
+elif page == "🤖 AI Health Assistant":
     st.markdown("## 🤖 AI Health Assistant")
-    st.markdown("Chat with our AI powered by Google Gemini. Get answers to your health questions 24/7.")
+    st.markdown("Chat with our AI powered by Google Gemini about diabetes, nutrition, and health.")
+    
+    if not GEMINI_API_KEY:
+        st.error("❌ GEMINI_API_KEY not configured. Please set it in your `.env` file.")
+        st.stop()
     
     # Display chat history
     for message in st.session_state.chat_history:
@@ -152,7 +270,7 @@ elif page == "AI Health Assistant":
             st.markdown(message["content"])
     
     # Chat input
-    user_input = st.chat_input("Ask a health-related question...")
+    user_input = st.chat_input("Ask a health question...")
     
     if user_input:
         st.session_state.chat_history.append({"role": "user", "content": user_input})
@@ -160,99 +278,148 @@ elif page == "AI Health Assistant":
         with st.chat_message("user"):
             st.markdown(user_input)
         
-        try:
-            response = requests.post(
-                "http://localhost:3000/api/chat",
-                json={
-                    "sessionId": "streamlit-session",
-                    "message": user_input
-                },
-                headers={
-                    "Authorization": f"Bearer {st.session_state.auth_token}",
-                    "Content-Type": "application/json"
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                assistant_message = result.get("response", "I couldn't generate a response. Please try again.")
-                st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # Build conversation context
+                system_prompt = """You are a helpful AI health assistant specializing in diabetes prevention, nutrition, and healthy lifestyle guidance.
+
+IMPORTANT GUIDELINES:
+- Provide general health information and educational content only
+- NEVER diagnose conditions or prescribe medications
+- ALWAYS remind users to consult healthcare providers for medical advice
+- Use evidence-based information
+- Be empathetic and supportive
+- Keep responses concise (2-4 paragraphs)"""
                 
-                with st.chat_message("assistant"):
-                    st.markdown(assistant_message)
-            else:
-                st.error("Error communicating with AI. Please try again.")
-        except Exception as e:
-            st.error(f"Connection error: {str(e)}")
-            st.info("💡 Make sure the backend server is running on port 3000.")
+                context = system_prompt + "\n\n"
+                # Include last 10 messages for context
+                recent = st.session_state.chat_history[-10:]
+                for msg in recent:
+                    role = "User" if msg["role"] == "user" else "Assistant"
+                    context += f"{role}: {msg['content']}\n"
+                context += "\nAssistant:"
+                
+                response_text, error = call_gemini(context)
+                
+                if error:
+                    st.error(error)
+                    assistant_message = "Sorry, I couldn't generate a response. Please try again."
+                else:
+                    assistant_message = response_text
+                
+                st.markdown(assistant_message)
+                st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
+    
+    # Clear chat button
+    if st.session_state.chat_history:
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.rerun()
 
 # =================== FOOD SCANNER PAGE ===================
-elif page == "Food Scanner":
-    st.markdown("## 📸 Food Scanner")
-    st.markdown("Upload a food image to get instant nutrition information")
+elif page == "📸 Food Scanner":
+    st.markdown("## 📸 AI Food Scanner")
+    st.markdown("Upload a food photo for AI-powered nutrition analysis using Google Gemini Vision.")
     
-    uploaded_file = st.file_uploader("Choose a food image", type=["jpg", "jpeg", "png"])
+    if not GEMINI_API_KEY:
+        st.error("❌ GEMINI_API_KEY not configured. Please set it in your `.env` file.")
+        st.stop()
+    
+    uploaded_file = st.file_uploader("Choose a food image", type=["jpg", "jpeg", "png", "webp"])
     
     if uploaded_file is not None:
         col1, col2 = st.columns([1, 1])
         
         with col1:
             image = Image.open(uploaded_file)
-            st.image(image, caption="Uploaded Image", use_column_width=True)
+            st.image(image, caption="📷 Uploaded Image", use_container_width=True)
         
-        if st.button("📊 Analyze Nutrition", key="food_btn", use_container_width=True):
-            try:
-                # Send image to backend
-                files = {'file': uploaded_file.getvalue()}
-                response = requests.post(
-                    "http://localhost:3000/api/food-scanner/analyze",
-                    files=files,
-                    headers={"Authorization": f"Bearer {st.session_state.auth_token}"},
-                    timeout=10
-                )
+        if st.button("🔍 Analyze Nutrition", key="food_btn", use_container_width=True, type="primary"):
+            with st.spinner("🤖 AI is analyzing your food..."):
+                # Read image and convert to base64
+                uploaded_file.seek(0)
+                image_bytes = uploaded_file.read()
+                base64_image = base64.b64encode(image_bytes).decode("utf-8")
                 
-                if response.status_code == 200:
-                    nutrition = response.json()
-                    
-                    with col2:
-                        st.markdown("### Nutrition Facts")
-                        st.metric("Calories", f"{nutrition.get('calories', 0):.0f} kcal")
-                        st.metric("Protein", f"{nutrition.get('protein', 0):.1f}g")
-                        st.metric("Carbs", f"{nutrition.get('carbs', 0):.1f}g")
-                        st.metric("Fat", f"{nutrition.get('fat', 0):.1f}g")
-                    
-                    st.divider()
-                    st.markdown("### Detailed Breakdown")
-                    
-                    df = pd.DataFrame({
-                        'Nutrient': ['Calories', 'Protein', 'Carbs', 'Fat', 'Fiber', 'Sugar'],
-                        'Amount': [
-                            nutrition.get('calories', 0),
-                            nutrition.get('protein', 0),
-                            nutrition.get('carbs', 0),
-                            nutrition.get('fat', 0),
-                            nutrition.get('fiber', 0),
-                            nutrition.get('sugar', 0)
-                        ]
-                    })
-                    
-                    st.dataframe(df, use_container_width=True)
+                mime_type = uploaded_file.type or "image/jpeg"
+                
+                prompt = """Analyze this food image and identify the food item(s). Return ONLY a valid JSON object with no markdown formatting, no code fences, and no extra text. Use this exact structure:
+{
+  "foodName": "name of the food",
+  "calories": <number>,
+  "carbs": <number in grams>,
+  "protein": <number in grams>,
+  "fat": <number in grams>,
+  "fiber": <number in grams>,
+  "sugar": <number in grams>,
+  "sodium": <number in mg>
+}
+
+If there are multiple food items, combine them into one entry with totals.
+If you cannot identify the food, use your best guess based on appearance.
+Base nutrition values on a typical single serving size.
+Return ONLY the JSON object, nothing else."""
+                
+                response_text, error = call_gemini(prompt, base64_image, mime_type)
+                
+                if error:
+                    st.error(f"❌ {error}")
                 else:
-                    st.error("Error analyzing image. Please try again.")
-            except Exception as e:
-                st.error(f"Connection error: {str(e)}")
+                    try:
+                        # Parse JSON
+                        clean_json = response_text.replace("```json", "").replace("```", "").strip()
+                        nutrition = json.loads(clean_json)
+                        
+                        with col2:
+                            st.markdown(f"### 🍽️ {nutrition.get('foodName', 'Unknown Food')}")
+                            st.markdown("---")
+                            
+                            # Main macros
+                            m1, m2 = st.columns(2)
+                            with m1:
+                                st.metric("🔥 Calories", f"{nutrition.get('calories', 0)} kcal")
+                                st.metric("🥩 Protein", f"{nutrition.get('protein', 0)}g")
+                                st.metric("🧈 Fat", f"{nutrition.get('fat', 0)}g")
+                            with m2:
+                                st.metric("🌾 Carbs", f"{nutrition.get('carbs', 0)}g")
+                                st.metric("🍬 Sugar", f"{nutrition.get('sugar', 0)}g")
+                                st.metric("🥬 Fiber", f"{nutrition.get('fiber', 0)}g")
+                            
+                            st.metric("🧂 Sodium", f"{nutrition.get('sodium', 0)}mg")
+                        
+                        # Detailed table
+                        st.markdown("---")
+                        st.markdown("### 📊 Detailed Breakdown")
+                        df = pd.DataFrame({
+                            'Nutrient': ['Calories', 'Protein', 'Carbs', 'Fat', 'Fiber', 'Sugar', 'Sodium'],
+                            'Amount': [
+                                f"{nutrition.get('calories', 0)} kcal",
+                                f"{nutrition.get('protein', 0)}g",
+                                f"{nutrition.get('carbs', 0)}g",
+                                f"{nutrition.get('fat', 0)}g",
+                                f"{nutrition.get('fiber', 0)}g",
+                                f"{nutrition.get('sugar', 0)}g",
+                                f"{nutrition.get('sodium', 0)}mg"
+                            ]
+                        })
+                        st.dataframe(df, use_container_width=True, hide_index=True)
+                        
+                        st.info("💡 Nutrition values are AI estimates based on image recognition. "
+                               "Actual values may vary by preparation and portion size.")
+                        
+                    except json.JSONDecodeError:
+                        st.error("❌ Could not parse nutrition data from AI response.")
+                        st.code(response_text)
 
 # =================== HEALTH CALCULATORS PAGE ===================
-elif page == "Health Calculators":
+elif page == "🧮 Health Calculators":
     st.markdown("## 🧮 Health Calculators")
-    st.markdown("Use our collection of health calculators for better health insights")
     
-    calc_tab1, calc_tab2, calc_tab3, calc_tab4 = st.tabs(["BMI Calculator", "Calorie Calculator", "Daily Risk", "Sugar Tracker"])
+    calc_tab1, calc_tab2, calc_tab3, calc_tab4 = st.tabs(["⚖️ BMI", "🔥 Calories", "📊 Daily Risk", "🍬 Sugar Tracker"])
     
     # BMI Calculator
     with calc_tab1:
-        st.subheader("BMI Calculator")
+        st.subheader("⚖️ BMI Calculator")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -260,159 +427,174 @@ elif page == "Health Calculators":
         with col2:
             weight = st.number_input("Weight (kg)", min_value=30, max_value=200, value=70)
         
-        if st.button("Calculate BMI", key="bmi_btn", use_container_width=True):
-            bmi = weight / ((height / 100) ** 2)
+        if st.button("Calculate BMI", key="bmi_btn", use_container_width=True, type="primary"):
+            bmi_val = weight / ((height / 100) ** 2)
             
-            if bmi < 18.5:
-                category = "🔵 Underweight"
-            elif bmi < 25:
-                category = "🟢 Normal Weight"
-            elif bmi < 30:
-                category = "🟡 Overweight"
+            if bmi_val < 18.5:
+                category, color = "Underweight", "🔵"
+            elif bmi_val < 25:
+                category, color = "Normal Weight", "🟢"
+            elif bmi_val < 30:
+                category, color = "Overweight", "🟡"
             else:
-                category = "🔴 Obese"
+                category, color = "Obese", "🔴"
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Your BMI", f"{bmi:.1f}")
+                st.metric("Your BMI", f"{bmi_val:.1f}")
             with col2:
-                st.metric("Category", category)
+                st.metric("Category", f"{color} {category}")
             with col3:
-                st.info(f"BMI Range: 18.5 - 24.9")
+                st.metric("Healthy Range", "18.5 - 24.9")
     
     # Calorie Calculator
     with calc_tab2:
-        st.subheader("Calorie & TDEE Calculator")
+        st.subheader("🔥 Calorie & TDEE Calculator")
         
         col1, col2 = st.columns(2)
         with col1:
-            age = st.number_input("Age", min_value=18, max_value=100, value=30, key="calorie_age")
-            weight = st.number_input("Weight (kg)", min_value=30, max_value=200, value=70, key="calorie_weight")
-            height = st.number_input("Height (cm)", min_value=100, max_value=250, value=170, key="calorie_height")
+            cal_age = st.number_input("Age", min_value=18, max_value=100, value=30, key="cal_age")
+            cal_weight = st.number_input("Weight (kg)", min_value=30, max_value=200, value=70, key="cal_weight")
+            cal_height = st.number_input("Height (cm)", min_value=100, max_value=250, value=170, key="cal_height")
         
         with col2:
             gender = st.selectbox("Gender", ["Male", "Female"])
             activity = st.selectbox("Activity Level", 
                 ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"])
         
-        if st.button("Calculate TDEE", key="calorie_btn", use_container_width=True):
+        if st.button("Calculate TDEE", key="calorie_btn", use_container_width=True, type="primary"):
             if gender == "Male":
-                bmr = 88.362 + (13.397 * weight) + (4.799 * height) - (5.677 * age)
+                bmr = 10 * cal_weight + 6.25 * cal_height - 5 * cal_age + 5
             else:
-                bmr = 447.593 + (9.247 * weight) + (3.098 * height) - (4.330 * age)
+                bmr = 10 * cal_weight + 6.25 * cal_height - 5 * cal_age - 161
             
-            activity_multipliers = {
-                "Sedentary": 1.2,
-                "Lightly Active": 1.375,
-                "Moderately Active": 1.55,
-                "Very Active": 1.725
+            multipliers = {
+                "Sedentary": 1.2, "Lightly Active": 1.375,
+                "Moderately Active": 1.55, "Very Active": 1.725
             }
-            
-            tdee = bmr * activity_multipliers[activity]
-            
-            st.metric("Daily Calorie Needs (TDEE)", f"{tdee:.0f} kcal/day")
-            st.metric("BMR", f"{bmr:.0f} kcal/day")
-    
-    # Daily Risk Calculator
-    with calc_tab3:
-        st.subheader("Daily Risk Assessment")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            sleep = st.slider("Hours of Sleep", 0, 12, 7, key="sleep")
-            exercise = st.slider("Minutes of Exercise", 0, 180, 30, key="exercise")
-        with col2:
-            water = st.slider("Glasses of Water", 0, 12, 8, key="water")
-            stress = st.slider("Stress Level (1-10)", 1, 10, 5, key="stress")
-        
-        sugar = st.slider("Grams of Added Sugar", 0, 200, 25, key="sugar")
-        
-        if st.button("Assess Daily Risk", key="daily_risk_btn", use_container_width=True):
-            risk_score = 0
-            reasons = []
-            
-            if sleep < 6:
-                risk_score += 15
-                reasons.append("❌ Insufficient sleep")
-            else:
-                reasons.append("✅ Good sleep")
-            
-            if exercise < 30:
-                risk_score += 10
-                reasons.append("❌ Low exercise")
-            else:
-                reasons.append("✅ Good exercise")
-            
-            if water < 6:
-                risk_score += 10
-                reasons.append("❌ Low water intake")
-            else:
-                reasons.append("✅ Good hydration")
-            
-            if sugar > 50:
-                risk_score += 15
-                reasons.append("❌ High sugar intake")
-            else:
-                reasons.append("✅ Good sugar control")
-            
-            if stress > 7:
-                risk_score += 10
-                reasons.append("❌ High stress")
-            else:
-                reasons.append("✅ Good stress management")
+            tdee = bmr * multipliers[activity]
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Daily Risk Score", f"{risk_score}%")
+                st.metric("🔥 Daily Calorie Needs (TDEE)", f"{tdee:.0f} kcal/day")
             with col2:
-                if risk_score < 25:
-                    st.success("🟢 Low Risk - Keep up the good habits!")
-                elif risk_score < 50:
-                    st.info("🟡 Moderate Risk - Room for improvement")
-                else:
-                    st.warning("🔴 High Risk - Make some lifestyle changes")
+                st.metric("💤 Basal Metabolic Rate (BMR)", f"{bmr:.0f} kcal/day")
             
-            st.markdown("### Breakdown:")
-            for reason in reasons:
-                st.markdown(f"- {reason}")
+            st.markdown("### 🎯 Goal-based Calories")
+            goals = pd.DataFrame({
+                'Goal': ['Extreme Loss', 'Weight Loss', 'Mild Loss', 'Maintain', 'Mild Gain', 'Weight Gain'],
+                'Daily Calories': [f"{tdee-1000:.0f}", f"{tdee-500:.0f}", f"{tdee-250:.0f}", 
+                                   f"{tdee:.0f}", f"{tdee+250:.0f}", f"{tdee+500:.0f}"]
+            })
+            st.dataframe(goals, use_container_width=True, hide_index=True)
     
-    # Sugar Tracker
-    with calc_tab4:
-        st.subheader("Daily Sugar Intake Tracker")
-        
-        st.markdown("**Recommended Daily Sugar Limit:**")
-        st.info("Men: 36g | Women: 25g | Children: 12-25g")
+    # Daily Risk
+    with calc_tab3:
+        st.subheader("📊 Daily Risk Assessment")
         
         col1, col2 = st.columns(2)
         with col1:
-            breakfast_sugar = st.number_input("Breakfast Sugar (g)", min_value=0, max_value=100, value=10)
-            lunch_sugar = st.number_input("Lunch Sugar (g)", min_value=0, max_value=100, value=15)
+            sleep = st.slider("💤 Hours of Sleep", 0, 12, 7, key="sleep")
+            exercise = st.slider("🏃 Minutes of Exercise", 0, 180, 30, key="exercise")
         with col2:
-            dinner_sugar = st.number_input("Dinner Sugar (g)", min_value=0, max_value=100, value=10)
-            snacks_sugar = st.number_input("Snacks Sugar (g)", min_value=0, max_value=100, value=5)
+            water = st.slider("💧 Glasses of Water", 0, 12, 8, key="water")
+            stress = st.slider("😰 Stress Level (1-10)", 1, 10, 5, key="stress")
+        
+        sugar_intake = st.slider("🍬 Grams of Added Sugar", 0, 200, 25, key="sugar_input")
+        
+        if st.button("Assess Daily Risk", key="daily_risk_btn", use_container_width=True, type="primary"):
+            score = 100
+            factors = []
+            
+            if sleep < 6:
+                score -= 15
+                factors.append("❌ Insufficient sleep (< 6 hours)")
+            elif 7 <= sleep <= 9:
+                factors.append("✅ Good sleep (7-9 hours)")
+            else:
+                score -= 10
+                factors.append("⚠️ Sleep could be better")
+            
+            if exercise < 15:
+                score -= 20
+                factors.append("❌ Very low exercise (< 15 min)")
+            elif exercise >= 30:
+                factors.append("✅ Good exercise (30+ min)")
+            else:
+                score -= 10
+                factors.append("⚠️ Moderate exercise")
+            
+            if water < 6:
+                score -= 10
+                factors.append("❌ Low water intake")
+            else:
+                factors.append("✅ Good hydration")
+            
+            if sugar_intake > 50:
+                score -= 25
+                factors.append("❌ High sugar intake (> 50g)")
+            elif sugar_intake <= 25:
+                factors.append("✅ Low sugar intake")
+            else:
+                score -= 15
+                factors.append("⚠️ Moderate sugar intake")
+            
+            if stress >= 7:
+                score -= 15
+                factors.append("❌ High stress level")
+            else:
+                factors.append("✅ Good stress management")
+            
+            score = max(0, min(100, score))
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Health Score", f"{score}/100")
+                st.progress(score / 100)
+            with col2:
+                if score >= 80:
+                    st.success("🟢 **Low Risk** - Great job! Keep it up!")
+                elif score >= 60:
+                    st.warning("🟡 **Medium Risk** - Room for improvement")
+                else:
+                    st.error("🔴 **High Risk** - Consider lifestyle changes")
+            
+            st.markdown("### 📋 Breakdown")
+            for f in factors:
+                st.markdown(f"- {f}")
+    
+    # Sugar Tracker
+    with calc_tab4:
+        st.subheader("🍬 Daily Sugar Intake Tracker")
+        
+        st.info("**Recommended Daily Sugar Limit:** Men: 36g | Women: 25g | Children: 12-25g")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            breakfast_sugar = st.number_input("🌅 Breakfast (g)", min_value=0, max_value=100, value=10)
+            lunch_sugar = st.number_input("☀️ Lunch (g)", min_value=0, max_value=100, value=15)
+        with col2:
+            dinner_sugar = st.number_input("🌙 Dinner (g)", min_value=0, max_value=100, value=10)
+            snacks_sugar = st.number_input("🍪 Snacks (g)", min_value=0, max_value=100, value=5)
         
         total_sugar = breakfast_sugar + lunch_sugar + dinner_sugar + snacks_sugar
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Sugar Today", f"{total_sugar}g")
+            st.metric("Total Sugar", f"{total_sugar}g")
         with col2:
-            st.metric("Recommended", "36g (male)")
+            st.metric("Recommended", "≤ 36g (male)")
         with col3:
-            status = "✅ Within" if total_sugar <= 36 else "⚠️ Exceeded"
+            status = "✅ Within Limit" if total_sugar <= 36 else "⚠️ Exceeded"
             st.metric("Status", status)
 
 # =================== EDUCATION PAGE ===================
-elif page == "Education":
+elif page == "📚 Education":
     st.markdown("## 📚 Educational Resources")
-    st.markdown("Learn about diabetes, prevention, and healthy lifestyle management")
+    st.markdown("Learn about diabetes, prevention, and healthy lifestyle management.")
     
     edu_tab1, edu_tab2, edu_tab3, edu_tab4, edu_tab5 = st.tabs([
-        "What is Diabetes?",
-        "Symptoms & Signs",
-        "Prevention Methods",
-        "Diet Guidelines",
-        "Exercise Tips"
+        "🔬 What is Diabetes?", "🚨 Symptoms", "🛡️ Prevention", "🥗 Diet", "🏋️ Exercise"
     ])
     
     with edu_tab1:
@@ -422,11 +604,11 @@ elif page == "Education":
         The body either doesn't produce enough insulin or can't use insulin effectively.
         
         **Types of Diabetes:**
-        1. **Type 1**: Autoimmune condition where the pancreas doesn't produce insulin
-        2. **Type 2**: Most common; body becomes resistant to insulin
+        1. **Type 1**: Autoimmune condition — the pancreas doesn't produce insulin
+        2. **Type 2**: Most common — body becomes resistant to insulin
         3. **Gestational**: Develops during pregnancy; usually resolves after birth
         
-        **Stats:**
+        **Global Statistics:**
         - 422 million people worldwide have diabetes
         - 1.5 million deaths directly caused by diabetes annually
         - Complications include heart disease, stroke, kidney failure, blindness
@@ -436,31 +618,31 @@ elif page == "Education":
         st.subheader("Symptoms & Warning Signs")
         st.markdown("""
         **Early Warning Signs:**
-        - Increased thirst
-        - Frequent urination
-        - Fatigue and weakness
-        - Blurred vision
-        - Numbness or tingling in extremities
-        - Unexplained weight loss
-        - Slow-healing cuts or sores
-        - Dark patches on skin
+        - 🥤 Increased thirst
+        - 🚻 Frequent urination
+        - 😴 Fatigue and weakness
+        - 👁️ Blurred vision
+        - 🖐️ Numbness or tingling in extremities
+        - ⚖️ Unexplained weight loss
+        - 🩹 Slow-healing cuts or sores
+        - 🟤 Dark patches on skin (Acanthosis Nigricans)
         
         **When to See a Doctor:**
         If you experience any of these symptoms, consult a healthcare provider for testing.
-        Early detection can prevent complications.
+        Early detection can prevent serious complications.
         """)
     
     with edu_tab3:
         st.subheader("Diabetes Prevention Methods")
         st.markdown("""
         **Lifestyle Changes:**
-        1. **Weight Management**: Lose 5-10% of body weight if overweight
-        2. **Physical Activity**: 150 minutes of moderate exercise per week
-        3. **Healthy Diet**: Reduce refined carbs, increase fiber intake
-        4. **Stress Management**: Practice meditation, yoga, or relaxation
-        5. **Sleep**: Get 7-9 hours of quality sleep daily
-        6. **Avoid Smoking**: Quit smoking to reduce risk
-        7. **Moderate Alcohol**: Limit alcohol consumption
+        1. ⚖️ **Weight Management** — Lose 5-10% of body weight if overweight
+        2. 🏃 **Physical Activity** — 150 minutes of moderate exercise per week
+        3. 🥗 **Healthy Diet** — Reduce refined carbs, increase fiber intake
+        4. 🧘 **Stress Management** — Practice meditation, yoga, or relaxation
+        5. 💤 **Sleep** — Get 7-9 hours of quality sleep daily
+        6. 🚭 **Avoid Smoking** — Quit smoking to reduce risk
+        7. 🍷 **Moderate Alcohol** — Limit alcohol consumption
         
         **Regular Monitoring:**
         - Get blood glucose tested annually
@@ -470,68 +652,59 @@ elif page == "Education":
         """)
     
     with edu_tab4:
-        st.subheader("Diet Guidelines for Diabetes Prevention")
+        st.subheader("Diet Guidelines")
         st.markdown("""
         **Foods to Eat:**
-        ✅ Whole grains and fiber-rich foods
-        ✅ Lean proteins (chicken, fish, legumes)
-        ✅ Non-starchy vegetables (broccoli, spinach, peppers)
-        ✅ Healthy fats (nuts, olive oil, avocados)
-        ✅ Low-sugar fruits (berries, apples)
+        - ✅ Whole grains and fiber-rich foods
+        - ✅ Lean proteins (chicken, fish, legumes)
+        - ✅ Non-starchy vegetables (broccoli, spinach, peppers)
+        - ✅ Healthy fats (nuts, olive oil, avocados)
+        - ✅ Low-sugar fruits (berries, apples)
         
         **Foods to Avoid:**
-        ❌ Sugary drinks and sodas
-        ❌ Refined carbohydrates (white bread, pastries)
-        ❌ Processed foods high in sodium
-        ❌ Red and processed meats
-        ❌ Sweets and desserts
-        ❌ Alcohol (excessive consumption)
+        - ❌ Sugary drinks and sodas
+        - ❌ Refined carbohydrates (white bread, pastries)
+        - ❌ Processed foods high in sodium
+        - ❌ Red and processed meats
+        - ❌ Excessive sweets and desserts
         
-        **Meal Planning Tips:**
+        **Meal Tips:**
         - Eat smaller, frequent meals
         - Balance carbs, proteins, and fats
         - Control portion sizes
-        - Reduce added sugars
         - Stay hydrated with water
         """)
     
     with edu_tab5:
-        st.subheader("Exercise Tips for Diabetes Prevention")
+        st.subheader("Exercise Tips")
         st.markdown("""
         **Exercise Types:**
         
-        1. **Cardiovascular Exercise** (150 min/week)
+        1. **🏃 Cardiovascular** (150 min/week)
            - Brisk walking, jogging, cycling, swimming
            - Improves heart health and insulin sensitivity
         
-        2. **Resistance Training** (2-3 times/week)
+        2. **🏋️ Resistance Training** (2-3 times/week)
            - Weight lifting, bodyweight exercises
            - Builds muscle mass, improves glucose metabolism
         
-        3. **Flexibility and Balance** (daily)
+        3. **🧘 Flexibility & Balance** (daily)
            - Yoga, stretching, tai chi
            - Reduces stress and improves mobility
         
-        **Getting Started:**
-        - Start slowly and gradually increase intensity
-        - Aim for consistency over intensity
-        - Find activities you enjoy
-        - Exercise with a friend for motivation
-        - Check with doctor before starting new exercise
-        
         **Benefits:**
-        ✅ Lowers blood sugar levels
-        ✅ Improves insulin sensitivity
-        ✅ Helps weight management
-        ✅ Reduces cardiovascular risk
-        ✅ Improves mental health
+        - ✅ Lowers blood sugar levels
+        - ✅ Improves insulin sensitivity
+        - ✅ Helps weight management
+        - ✅ Reduces cardiovascular risk
+        - ✅ Improves mental health
         """)
 
 # Footer
 st.divider()
 st.markdown("""
-    <div style='text-align: center; color: #666; padding: 20px;'>
-        <p>© 2026 DiaRisk AI | Advanced Diabetes Risk Prediction Platform</p>
-        <p>⚕️ For educational and informational purposes only. Not a substitute for professional medical advice.</p>
-    </div>
-    """, unsafe_allow_html=True)
+<div style='text-align: center; color: #666; padding: 10px;'>
+    <p>© 2026 DiaRisk AI | Advanced Diabetes Risk Prediction Platform</p>
+    <p>⚕️ For educational and informational purposes only. Not a substitute for professional medical advice.</p>
+</div>
+""", unsafe_allow_html=True)

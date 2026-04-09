@@ -249,6 +249,12 @@ export const queries = {
     UPDATE chatbot_sessions SET last_message_at = strftime('%s', 'now') WHERE session_id = ?
   `),
 
+  // Nutrition scan logging (used by food scanner)
+  logNutrition: db.prepare(`
+    INSERT INTO nutrition_logs (user_id, food_name, calories, protein, carbs, fats, sugar, meal_type, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'scan', 'food_scanner')
+  `),
+
   // Audit operations
   createAuditLog: db.prepare(`
     INSERT INTO audit_logs (user_id, action, resource, details, ip_address)
