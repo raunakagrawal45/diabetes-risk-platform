@@ -585,7 +585,7 @@ async function startServer() {
         });
       }
 
-      const genAI = new GoogleGenerativeAI(apiKey);
+      const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: "v1beta" });
 
       // Build conversation context
       let conversationHistory: any[] = [];
@@ -760,7 +760,7 @@ Your response should be concise (2-4 paragraphs), accurate, and helpful.`;
         });
       }
 
-      const genAI = new GoogleGenerativeAI(apiKey);
+      const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: "v1beta" });
       const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
       // Convert image buffer to base64
