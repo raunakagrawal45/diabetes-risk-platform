@@ -132,7 +132,7 @@ with st.sidebar:
     st.markdown("### ℹ️ About")
     st.info(
         "**DiaRisk AI** is a comprehensive platform for diabetes prevention and management.\n\n"
-        "✨ **Features:**\n"
+        "**✨ Features:**\n"
         "- ML-based risk assessment\n"
         "- AI health chatbot (Gemini)\n"
         "- Food nutrition scanner\n"
