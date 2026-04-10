@@ -61,4 +61,9 @@ Identify food items and get nutritional information instantly using advanced com
 *For advanced configuration, see the archived documentation in the `/archive` folder.*
 
 ---
+> [!NOTE]
+> **Service Availability**: AI features (Assistant and Food Scanner) utilize the Gemini API and may occasionally fluctuate or hit quota limits during periods of high demand.
+
+![Service Limitation](working%20ss/GEMINI%20ERROR.png)
+
 ⚕️ *Disclaimer: This platform is for educational purposes only and does not constitute medical advice.*
